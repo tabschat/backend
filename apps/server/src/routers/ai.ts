@@ -141,7 +141,8 @@ aiRoute.get('/threads', async(c)=>{
           id:true,
           title:true,
           updatedAt:true
-        }
+        },
+        limit:20
     })
     return c.json({ threads }, 200);
   }
@@ -151,5 +152,36 @@ aiRoute.get('/threads', async(c)=>{
     )
   }
 })
+
+
+aiRoute.delete('delete-thread/:threadId', async(c)=>{
+  const threadId = c.req.param("threadId")
+  const currentUserId = c.get("user")?.id
+  console.log(threadId, currentUserId)
+  if(!currentUserId){
+    return c.json({error: "Unauthorized User"}, 401)
+  }
+
+  try{
+    const msg = await db.query.message.findFirst({
+      where: (message, {eq})=> eq(message.id, threadId),
+    })
+    if (!msg) {
+      return c.json({ error: 'Thread not found' }, 404);
+    }
+
+    if (msg.userId !== currentUserId) {
+      return c.json({ error: 'Unauthorized' }, 403);
+    }
+    
+    await db.delete(message).where(eq(message.id, threadId))
+    return c.json({message: "Thread deleted successfuly"}, 200)
+
+  }catch(error:any){
+    console.log(error)
+    return c.json({error: error.message || "Error while deleting the thread"}, 500)
+  }
+})
+// get/threadId "" varify uuid4 f not return 404 
 
 export { aiRoute };
