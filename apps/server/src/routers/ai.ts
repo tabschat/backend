@@ -7,8 +7,8 @@ import { Redis } from "@upstash/redis";
 
 import { db } from "@/db";
 import { auth } from "../lib/auth";
-import { message as dbMsg } from "@/db/schema/message";
-import { eq } from "drizzle-orm";
+import { message as dbMsg, message } from "@/db/schema/message";
+import { eq, isNotNull } from "drizzle-orm";
 
 const aiRoute = new Hono<{
   Variables: {
@@ -105,7 +105,7 @@ aiRoute.post("/generate", async (c) => {
             model: openai("gpt-4o-mini-2024-07-18"),
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content: ${msgs.messages[1].content}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${msgs.messages[0].content}; ## DO not use bot the content`,
           });
-          await db.update(dbMsg).set({title:text}).where(eq(dbMsg.userId, userId))
+          await db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.userId, userId))
         }
       },
     });
@@ -117,11 +117,39 @@ aiRoute.post("/generate", async (c) => {
   } catch (error: any) {
     console.error("Err in the route", error);
     return c.json(
-      { error: error.message || "Failed to generate component" },
+      { error: error.message || "Filed to generate reponse" },
       500
     );
   }
 });
 ;
+
+aiRoute.get('/threads', async(c)=>{
+  const currentUserId = c.get("user")?.id
+  if(!currentUserId){
+    return c.json({error: "Unauthorized User"}, 401)
+  }
+  try{
+    const threads = await db.query.message.findMany({
+      where: (message, {eq, and})=>
+        and(
+          eq(message.userId, currentUserId),
+          isNotNull(message.title)
+        ),
+        orderBy: (message, { desc }) => [desc(message.updatedAt)],
+        columns: {
+          id:true,
+          title:true,
+          updatedAt:true
+        }
+    })
+    return c.json({ threads }, 200);
+  }
+  catch(error:any){
+    return c.json(
+      {error: error.message || "Error while getting the generated threads"}
+    )
+  }
+})
 
 export { aiRoute };
