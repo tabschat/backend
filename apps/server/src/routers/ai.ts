@@ -49,10 +49,10 @@ aiRoute.post("/generate", async (c) => {
 
   try {
     const code = streamText({
-      model: openai("gpt-4.1-nano"),
+      model: openai("gpt-4o-mini-2024-07-18"),
       system: `you are a ai assistant name Gass you are 10 days old and you will only answer what is asked by the user nothing more nothing less.`,
       messages: messages,
-      onFinish: async ({ text, request }) => {
+      onFinish: async ({ text, request}) => {
         const userMessage = messages[messages.length - 1];
         const metaDataBody = request.body;
         const msgs = JSON.parse(metaDataBody!);
@@ -105,7 +105,7 @@ aiRoute.post("/generate", async (c) => {
             model: openai("gpt-4o-mini-2024-07-18"),
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content: ${msgs.messages[1].content}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${msgs.messages[0].content}; ## DO not use bot the content`,
           });
-          await db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.userId, userId))
+          await db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.id, id))
         }
       },
     });
@@ -184,4 +184,29 @@ aiRoute.delete('delete-thread/:threadId', async(c)=>{
 })
 // get/threadId "" varify uuid4 f not return 404 
 
+aiRoute.get('thread/:threadId', async(c)=>{
+   const threadId = c.req.param("threadId")
+  const currentUserId = c.get("user")?.id
+  console.log(threadId, currentUserId)
+  if(!currentUserId){
+    return c.json({error: "Unauthorized User"}, 401)
+  }
+
+    const msg = await db.query.message.findFirst({
+      where: (message, {eq})=> eq(message.id, threadId),
+    })
+    if (!msg) {
+      return c.json({ error: 'Thread not found' }, 404);
+    }
+
+    if (msg.userId !== currentUserId) {
+      return c.json({ error: 'Unauthorized' }, 403);
+    }
+  const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1)
+  const chats = (Array.isArray(threads) ? threads : Object.values(threads as string))
+  .map(thd => (thd!))
+  .reverse(); // Reverse since lpush adds to beginning
+
+  return c.json({chats})
+})
 export { aiRoute };
