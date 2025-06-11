@@ -15,6 +15,13 @@
       "when": 1749573064538,
       "tag": "0001_flippant_sabretooth",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1749604914759,
+      "tag": "0002_useful_ser_duncan",
+      "breakpoints": true
     }
   ]
 }
