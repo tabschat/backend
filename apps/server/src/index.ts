@@ -50,4 +50,12 @@ app.get("/", (c) => {
 
 app.route('/ai', aiRoute)
 
+if (typeof Bun !== 'undefined') {
+  Bun.serve({
+    fetch: app.fetch,
+    port: 3000,
+    idleTimeout: 255 // 1 hour
+  });
+}
+
 export default app;

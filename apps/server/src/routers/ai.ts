@@ -36,8 +36,9 @@ aiRoute.get("/models", async (c) => {
 });
 
 aiRoute.post("/generate", async (c) => {
-  const { messages, id } = await c.req.json();
+  const {messages, id } = await c.req.json();
   const userId = c.get("user")?.id;
+  const userLastInput = messages[messages.length - 1].content
 
   if (!messages) {
     return c.json({ error: "Prompt is required" }, 400);
@@ -47,7 +48,11 @@ aiRoute.post("/generate", async (c) => {
     return c.json({ error: "User undefined" }, 404);
   }
 
+  await redis.publish(`chat:${id}`, JSON.stringify({role: "user", "content": userLastInput, "timestamp": new Date().toISOString(), "type": "user_input", chatId: id}))
+
+
   try {
+    let wholeSentence = ""
     const code = streamText({
       model: openai("gpt-4o-mini-2024-07-18"),
       system: `you are a ai assistant name Gass you are 10 days old and you will only answer what is asked by the user nothing more nothing less.`,
@@ -81,6 +86,9 @@ aiRoute.post("/generate", async (c) => {
 
         await pipeline.exec();
 
+        await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", "content": wholeSentence, "timestamp": new Date().toISOString(), "type": "chat_completed", chatId: id}))
+
+
         // save the saved message refference in the user mssage column
         const newMsg: typeof dbMsg.$inferInsert = {
           id: id,
@@ -106,8 +114,14 @@ aiRoute.post("/generate", async (c) => {
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content: ${msgs.messages[1].content}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${msgs.messages[0].content}; ## DO not use bot the content`,
           });
           await db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.id, id))
+
         }
       },
+      onChunk: async({chunk}) => {
+        wholeSentence += chunk.textDelta
+        await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", "content": wholeSentence, "timestamp": new Date().toISOString(), "type": "chat_stream_chunk", chatId: id}))
+
+      }
     });
     c.header("X-Vercel-AI-Data-Stream", "v1");
     c.header("Content-Type", "text/plain; charset=utf-8");
@@ -121,8 +135,59 @@ aiRoute.post("/generate", async (c) => {
       500
     );
   }
+})
+
+
+aiRoute.get('/stream/:chatId', async (c) => {
+  const chatId = c.req.param('chatId');
+  const setKey = `chat:${chatId}`;
+  const upstashUrl = `${process.env.UPSTASH_REDIS_REST_URL}/subscribe/${setKey}`;
+
+  // Initial welcome message formatted as an SSE event
+  const initialMessage = `+`;
+
+  // Fetch SSE stream from Upstash Redis REST API
+  const upstashResponse = await fetch(upstashUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
+      'Accept': 'text/event-stream',
+    },
+  });
+
+  if (!upstashResponse.ok) {
+    return c.text('Failed to subscribe to Upstash Redis', 500);
+  }
+
+  const upstashStream = upstashResponse.body;
+
+  // Create a combined stream: initial message followed by Upstash stream
+  const combinedStream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(initialMessage));
+      const reader = upstashStream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        controller.enqueue(value);
+      }
+      controller.close();
+    },
+  });
+
+  // Return the SSE stream with appropriate headers
+  return new Response(combinedStream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': 'http://localhost:5173',
+      'Access-Control-Allow-Credentials': 'true',
+    },
+  });
 });
-;
+
 
 aiRoute.get('/threads', async(c)=>{
   const currentUserId = c.get("user")?.id
