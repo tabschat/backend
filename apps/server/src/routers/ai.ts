@@ -133,12 +133,11 @@ aiRoute.post("/generate", async (c) => {
             model: openai("gpt-4.1-nano"),
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content: ${msgs.messages[1].content}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${msgs.messages[0].content}; ## DO not use bot the content`,
           });
-          db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.id, id)).then(async()=>{
-            // after title is safed stream with the type chat completed
-            await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", id: generateMsgId, content: wholeSentence, timestamp: new Date().toISOString(), type: "chat_completed", chatId: id}))
-          })
+          await db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.id, id))
 
         }
+        await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", id: generateMsgId, content: wholeSentence, timestamp: new Date().toISOString(), type: "chat_completed", chatId: id}))
+
       },
       onChunk: async({chunk}) => {
         wholeSentence += chunk.textDelta
