@@ -7,7 +7,7 @@ import { Redis } from "@upstash/redis";
 
 import { db } from "@/db";
 import { auth } from "../lib/auth";
-import { message as dbMsg, message } from "@/db/schema/message";
+import { message} from "@/db/schema/message";
 import { eq, isNotNull } from "drizzle-orm";
 
 import { v4 as uuidv4 } from "uuid" //delete it asap
@@ -109,17 +109,17 @@ aiRoute.post("/generate", async (c) => {
         await pipeline.exec();
 
         // save the saved message refference in the user mssage column
-        const newMsg: typeof dbMsg.$inferInsert = {
+        const newMsg: typeof message.$inferInsert = {
           id: id,
           userId: userId,
           createdAt: new Date(),
           updatedAt: new Date(),
         };
         await db
-          .insert(dbMsg)
+          .insert(message)
           .values(newMsg)
           .onConflictDoUpdate({
-            target: dbMsg.id,
+            target: message.id,
             set: {
               updatedAt: new Date(),
             },
@@ -133,7 +133,7 @@ aiRoute.post("/generate", async (c) => {
             model: openai("gpt-4.1-nano"),
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content: ${msgs.messages[1].content}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${msgs.messages[0].content}; ## DO not use bot the content`,
           });
-          await db.update(dbMsg).set({title:text, updatedAt: new Date()}).where(eq(dbMsg.id, id))
+          await db.update(message).set({title:text, updatedAt: new Date()}).where(eq(message.id, id))
 
         }
         await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", id: generateMsgId, content: wholeSentence, timestamp: new Date().toISOString(), type: "chat_completed", chatId: id}))
@@ -384,8 +384,10 @@ aiRoute.delete('delete-thread/:threadId', async(c)=>{
 })
 // get/threadId "" varify uuid4 f not return 404 
 
+// get thread msgs
 aiRoute.get('thread/:threadId', async(c)=>{
    const threadId = c.req.param("threadId")
+   const isPublic = c.req.query('is_public')
   const currentUserId = c.get("user")?.id
   console.log(threadId, currentUserId)
   if(!currentUserId){
@@ -408,5 +410,48 @@ aiRoute.get('thread/:threadId', async(c)=>{
   .reverse(); // Reverse since lpush adds to beginning
 
   return c.json({chats})
+})
+
+// share the chat
+aiRoute.get('publish-thread/:threadId', async(c)=>{
+  const currentUserId = c.get("user")?.id
+  const threadId = c.req.param("threadId")
+  const isPublicQuery = c.req.query('isp')
+
+  let isPublic:boolean = false
+  if(isPublicQuery==="true"){
+    isPublic=true;
+  }
+  if(isPublicQuery==="false"){
+    isPublic=false
+  }
+
+  if(!currentUserId){
+    return c.json({error: "Unauthorized User"}, 401)
+  }
+
+  try{
+    const msg = await db.query.message.findFirst({
+      where: (message, {eq})=> eq(message.id, threadId),
+    })
+    if (!msg) {
+      return c.json({ error: 'Thread not found' }, 404);
+    }
+
+    if (msg.userId !== currentUserId) {
+      return c.json({ error: 'Unauthorized' }, 403);
+    }
+
+    if(isPublicQuery ){
+      await db.update(message).set({isPublic: isPublic, updatedAt: new Date()}).where(eq(message.id,  threadId))
+      return c.json({id:msg.id, title:msg.title, isPublic:msg.isPublic}, 200)
+    }
+    // remove the userID from here asap
+    return c.json({id:msg.id, title:msg.title, isPublic:msg.isPublic}, 200)
+
+  }catch(error:any){
+    console.log(error)
+    return c.json({error: error.message || "Error while updating the thread"}, 500)
+  }
 })
 export { aiRoute };
