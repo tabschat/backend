@@ -50,7 +50,7 @@ aiRoute.post("/generate", async (c) => {
   const userId = c.get("user")?.id;
   const userLastInput = messages[messages.length - 1].content
   const userLastInputId = `usr-${messages[messages.length - 1].id}`
-  const generateMsgId = `msg-${uuidv4}`
+  const generateMsgId = uuidv4()
 
   console.log("~~~GENERATES MSG ID ~~~~~~~~~", generateMsgId)
 
@@ -110,7 +110,7 @@ aiRoute.post("/generate", async (c) => {
 
         await pipeline.exec();
 
-        // save the saved message refference in the user mssage column
+        // save the saved message refference in the user mssage column if esist the just update the update column
         const newMsg: typeof message.$inferInsert = {
           id: id,
           userId: userId,
@@ -417,12 +417,12 @@ aiRoute.get('thread/:threadId', async(c)=>{
 aiRoute.get('shared/:threadId', async(c)=>{
   const threadId = c.req.param("threadId")
 
-    const msg = await db.query.message.findFirst({
+  const msg = await db.query.message.findFirst({
       where: (message, {eq})=> eq(message.id, threadId),
-    })
-    if (!msg || !msg.isPublic) {
-      return c.json({ error: 'Chat not found' }, 404);
-    }
+  })
+  if (!msg || !msg.isPublic) {
+    return c.json({ error: 'Chat not found' }, 404);
+  }
 
   const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1)
   const chats = (Array.isArray(threads) ? threads : Object.values(threads as string))
@@ -474,4 +474,57 @@ aiRoute.get('publish-thread/:threadId', async(c)=>{
     return c.json({error: error.message || "Error while updating the thread"}, 500)
   }
 })
+
+
+
+aiRoute.get('fork/:threadId', async (c) => {
+  try {
+    const threadId = c.req.param("threadId");
+    const userId = c.get("user")?.id;
+    const generatedMsgId = uuidv4();
+
+    if (!userId) {
+      return c.json({ error: "User not found" }, 404);
+    }
+
+    // Find the original message/thread
+    const msg = await db.query.message.findFirst({
+      where: (message, { eq }) => eq(message.id, threadId),
+    });
+
+    if (!msg || !msg.isPublic) {
+      return c.json({ error: "Chat not found" }, 404);
+    }
+
+    // Get all messages from the original thread
+    const savedThreads = await redis.lrange(`chat:${threadId}:messages`, 0, -1);
+
+    if (!savedThreads || savedThreads.length === 0) {
+      return c.json({ error: "Fork failed. No messages found." }, 404);
+    }
+
+    // Create a new thread in the database
+    await db.insert(message).values({
+      id: generatedMsgId,
+      title: msg.title,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      userId: userId,
+      isPublic: false,
+    });
+
+    // Copy messages as a new msg/thread with new message id thats it
+    const pipeline = redis.pipeline();
+    savedThreads.forEach((msg) => {
+      pipeline.rpush(`chat:${generatedMsgId}:messages`, msg);
+    });
+    await pipeline.exec();
+
+    return c.json({ message: "Forked successfully", newThreadId: generatedMsgId }, 200);
+  } catch (error) {
+    console.error("Forking error:", error);
+    return c.json({ error: "Internal server error" }, 500);
+  }
+});
+
 export { aiRoute };
