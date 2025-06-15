@@ -24,10 +24,12 @@ app.use(
     credentials: true,
   })
 );
+
+console.log("CORS_ORIGIN from env:", process.env.CORS_ORIGIN);
+
 app.use("/*", async (c, next) => {
-  // Skip auth for /api/auth/* and root
   const path = c.req.path;
-  if (path.startsWith("/api/auth/") || path === "/") {
+  if (path.startsWith("/api/auth/") || path === "/" || path.startsWith("/ai/shared/")) {
     return next();
   }
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
@@ -40,12 +42,41 @@ app.use("/*", async (c, next) => {
 });
  
 app.on(["POST", "GET"], "/api/auth/*", (c) => {
+    console.log('Incoming request to /api/auth/*:', c.req.url);
 	return auth.handler(c.req.raw);
 });
 
 
 app.get("/", (c) => {
-  return c.text("OK");
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Redirecting...</title>
+        <meta http-equiv="refresh" content="3;url=${frontendUrl}">
+        <style>
+            body {
+                background-color: #222222;
+                color: #eeeeee; /* Light grey text for readability */
+                font-family: sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+            }
+            a {
+                color: #88ccff; /* A slightly brighter blue for the link */
+            }
+        </style>
+    </head>
+    <body>
+        <p>Redirecting to your application... If you are not redirected automatically, <a href="${frontendUrl}">click here</a>.</p>
+    </body>
+    </html>
+  `;
+  return c.html(htmlContent);
 });
 
 app.route('/ai', aiRoute)

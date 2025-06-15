@@ -49,8 +49,10 @@ aiRoute.post("/generate", async (c) => {
   const {messages, id, clientId} = await c.req.json();
   const userId = c.get("user")?.id;
   const userLastInput = messages[messages.length - 1].content
-  const userLastInputId = "usr-" + "" + messages[messages.length - 1].id
-  const generateMsgId = "msg-" + "" + uuidv4()
+  const userLastInputId = `usr-${messages[messages.length - 1].id}`
+  const generateMsgId = `msg-${uuidv4}`
+
+  console.log("~~~GENERATES MSG ID ~~~~~~~~~", generateMsgId)
 
   // id ->thread Id, while chat id;  msgId/generated msg id ->  liek id for eache single msg
   addClientId(connectedClients, id,  clientId)
@@ -66,7 +68,7 @@ aiRoute.post("/generate", async (c) => {
   }
 
 
-  await redis.publish(`chat:${id}`, JSON.stringify({role: "user", content: userLastInput, id: userLastInputId, timestamp: new Date().toISOString(), type: "user_input", chatId: id}))
+  await redis.publish(`chat:${id}`, JSON.stringify({role: "user", content: userLastInput, id: userLastInputId, timestamp: new Date(), type: "user_input", chatId: id}))
 
 
 
@@ -408,6 +410,24 @@ aiRoute.get('thread/:threadId', async(c)=>{
   const chats = (Array.isArray(threads) ? threads : Object.values(threads as string))
   .map(thd => (thd!))
   .reverse(); // Reverse since lpush adds to beginning
+
+  return c.json({chats})
+})
+
+aiRoute.get('shared/:threadId', async(c)=>{
+  const threadId = c.req.param("threadId")
+
+    const msg = await db.query.message.findFirst({
+      where: (message, {eq})=> eq(message.id, threadId),
+    })
+    if (!msg || !msg.isPublic) {
+      return c.json({ error: 'Chat not found' }, 404);
+    }
+
+  const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1)
+  const chats = (Array.isArray(threads) ? threads : Object.values(threads as string))
+  .map(thd => (thd!))
+  .reverse();
 
   return c.json({chats})
 })
