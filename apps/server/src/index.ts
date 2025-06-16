@@ -6,6 +6,7 @@ import {auth} from "./lib/auth"
 
 import { aiRoute } from "./routers/ai";
 
+
 const app = new Hono<
 {
 	Variables: {
@@ -25,11 +26,10 @@ app.use(
   })
 );
 
-console.log("CORS_ORIGIN from env:", process.env.CORS_ORIGIN);
 
 app.use("/*", async (c, next) => {
   const path = c.req.path;
-  if (path.startsWith("/api/auth/") || path === "/" || path.startsWith("/ai/shared/")) {
+  if (path.startsWith("/api/auth/") || path === "/" || path.startsWith("/ai/shared/") || path.startsWith("/ai/comp/stream/")) {
     return next();
   }
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
@@ -46,7 +46,7 @@ app.on(["POST", "GET"], "/api/auth/*", (c) => {
 	return auth.handler(c.req.raw);
 });
 
-
+// auth redirect fallback
 app.get("/", (c) => {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
   const htmlContent = `
@@ -54,7 +54,7 @@ app.get("/", (c) => {
     <html>
     <head>
         <title>Redirecting...</title>
-        <meta http-equiv="refresh" content="3;url=${frontendUrl}">
+        <meta http-equiv="refresh" content="1.5;url=${frontendUrl}">
         <style>
             body {
                 background-color: #222222;
@@ -85,7 +85,7 @@ if (typeof Bun !== 'undefined') {
   Bun.serve({
     fetch: app.fetch,
     port: 3000,
-    idleTimeout: 255 // 1 hour
+    idleTimeout: 255, // 1 hour
   });
 }
 
