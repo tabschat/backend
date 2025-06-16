@@ -4,7 +4,6 @@ import { db } from "../db";
 
 import * as schema from "../db/schema/auth"
 
-console.log("FRONTEND_URL at auth init:", process.env.FRONTEND_URL);
 
 export const auth = betterAuth({
   baseURL: "http://localhost:3000",
@@ -18,7 +17,6 @@ export const auth = betterAuth({
   ],
    callbacks: {
     async redirect({ url, baseUrl }: { url: string; baseUrl: string }) {
-      console.log('FRONTEND_URL from env:', process.env.FRONTEND_URL);
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173"
       
       // If the URL is relative, prepend frontend URL

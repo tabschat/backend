@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
+import { createBunWebSocket } from "hono/bun";
 
 import { createOpenAI } from "@ai-sdk/openai";
 import { streamText, generateText } from "ai";
@@ -7,13 +8,18 @@ import { Redis } from "@upstash/redis";
 
 import { db } from "@/db";
 import { auth } from "../lib/auth";
-import { message} from "@/db/schema/message";
+import { message } from "@/db/schema/message";
 import { eq, isNotNull } from "drizzle-orm";
 
-import { v4 as uuidv4 } from "uuid" //delete it asap
+import { v4 as uuidv4 } from "uuid"; //delete it asap
 import type { MsgIdMap } from "@/lib/get-set-client";
-import { addClientId, removeClientId, processMsgIdMap } from "@/lib/get-set-client";
+import {
+  addClientId,
+  removeClientId,
+  processMsgIdMap,
+} from "@/lib/get-set-client";
 
+export const { upgradeWebSocket } = createBunWebSocket();
 
 const aiRoute = new Hono<{
   Variables: {
@@ -27,8 +33,7 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-const connectedClients: MsgIdMap = {}
-
+const connectedClients: MsgIdMap = {};
 
 const openai = createOpenAI({
   apiKey: process.env.OPENAI_API,
@@ -43,76 +48,82 @@ aiRoute.get("/models", async (c) => {
   return c.json(modelList, 200);
 });
 
-
-
-aiRoute.post("/generate", async (c) => {
-  const {messages, id, clientId} = await c.req.json();
-  const userId = c.get("user")?.id;
-  const userLastInput = messages[messages.length - 1].content
-  const userLastInputId = `usr-${messages[messages.length - 1].id}`
-  const generateMsgId = uuidv4()
-
-  console.log("~~~GENERATES MSG ID ~~~~~~~~~", generateMsgId)
-
-  // id ->thread Id, while chat id;  msgId/generated msg id ->  liek id for eache single msg
-  addClientId(connectedClients, id,  clientId)
-
-
-
-  if (!messages) {
-    return c.json({ error: "Prompt is required" }, 400);
-  }
-
-  if (!userId) {
-    return c.json({ error: "User undefined" }, 404);
-  }
-
-
-  await redis.publish(`chat:${id}`, JSON.stringify({role: "user", content: userLastInput, id: userLastInputId, timestamp: new Date(), type: "user_input", chatId: id}))
-
-
-
+// id is thread id whole chat id
+aiRoute.post("/completion", async (c) => {
   try {
-    let wholeSentence = ""
-    const code = streamText({
-      // model: openai("gpt-4o-mini-2024-07-18"),
-      model: openai("gpt-4.1-nano"),
+    // Get the prompt and chat ID from request body; generate new chatId if missing or first message
+    const { prompt, chatId, messages} = await c.req.json();
+    const userId = c.get("user")?.id;
+
+
+    if (!chatId || !userId)  return c.json({ error: "Chat Id or User Id required" }, 407);
+
+    const generatedUserInputId = `usr-${uuidv4()}`;
+    const generatedMsgId = `msg-${uuidv4()}`;
+    const userInputObj = {
+      role: "user",
+      content: prompt,
+      id: generatedUserInputId,
+      timestamp: new Date(),
+      type: "user_input",
+    };
+
+    const msgLen = messages ? messages.length : 0;
+
+    // Create a chat history; using useCompletion in frontend end and it doesnot proded with chathistory/messages array with curreny user input so we have to create that
+    let newMssgArray;
+    if (msgLen > 0) {
+      const msg = messages;
+      newMssgArray = msg;
+      newMssgArray.push(userInputObj);
+    } else {
+      newMssgArray = [userInputObj];
+    }
+
+    let wholeSentence = "";
+
+    if (!prompt) {
+      return c.json({ error: "Prompt is required" }, 400);
+    }
+
+    await redis.publish(`chat:${chatId}`, userInputObj);
+    await redis.lpush(
+    `chat:${chatId}:messages`, userInputObj)
+
+    const result = streamText({
+      model: openai("gpt-3.5-turbo"),
+      messages: newMssgArray,
       system: `you are a ai assistant name Gass you are 10 days old and you will only answer what is asked by the user nothing more nothing less.`,
-      messages: messages,
-      onFinish: async ({ text, request}) => {
-        const userMessage = messages[messages.length - 1];
-        const metaDataBody = request.body;
-        const msgs = JSON.parse(metaDataBody!);
-        const msgsLen = msgs["messages"].length;
-
-        // save the data in upstash redis
-        const pipeline = redis.pipeline();
-
-        pipeline.lpush(
-          `chat:${id}:messages`,
-          JSON.stringify({
-            role: "user",
-            id: userLastInputId,
-            content: userMessage.content,
-            timestamp: Date.now(),
-          })
+      onChunk: async ({ chunk }) => {
+        if (chunk.type === "text-delta") {
+          wholeSentence += chunk.textDelta;
+        }
+        await redis.publish(
+          `chat:${chatId}`, {
+            role: "assistant",
+            id: generatedMsgId,
+            content: wholeSentence,
+            timestamp: new Date(),
+            type: "chat_streaming",
+          }
         );
+      },
+      onFinish: async ({ text }) => {
+        // save the generated content data in upstash redis
 
-        pipeline.lpush(
-          `chat:${id}:messages`,
+        await redis.lpush(
+          `chat:${chatId}:messages`,
           JSON.stringify({
             role: "assistant",
-            id:generateMsgId,
+            id: generatedMsgId,
             content: text,
             timestamp: Date.now(),
           })
         );
 
-        await pipeline.exec();
-
-        // save the saved message refference in the user mssage column if esist the just update the update column
+        // // save the generated message refference in the user mssage column if esist the just update the updateAT column
         const newMsg: typeof message.$inferInsert = {
-          id: id,
+          id: chatId,
           userId: userId,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -127,357 +138,284 @@ aiRoute.post("/generate", async (c) => {
             },
           });
 
-          // generate title for new chat/message array/ convo
-        // 0-2, 3 msg  means, just first msg is generated by the ai now we will generate the title save it in the backed 0: system, 1: user; 2:asssistent;
-        if (msgsLen === 2) {
-          const { text } = await generateText({
+        // generate title for new chat/message array/ convo
+        // if msg len 0 that smen it is new msg and then we have to generate the title for it, after comolitaion generated and mutate the url in frontend to get latest title
+        if (msgLen===0) {
+          const { text:generatedTitle } = await generateText({
             // model: openai("gpt-4o-mini-2024-07-18"),
-            model: openai("gpt-4.1-nano"),
-            prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content: ${msgs.messages[1].content}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${msgs.messages[0].content}; ## DO not use bot the content`,
+            model: openai("gpt-3.5-turbo"),
+            prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content1: ${text}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${prompt}; ## DO not use both content1 and context2 always use content1 if the title is not desciptive then use content2 for title generation`,
           });
-          await db.update(message).set({title:text, updatedAt: new Date()}).where(eq(message.id, id))
-
+          await db
+            .update(message)
+            .set({ title: generatedTitle })
+            .where(eq(message.id, chatId));
         }
-        await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", id: generateMsgId, content: wholeSentence, timestamp: new Date().toISOString(), type: "chat_completed", chatId: id}))
-
+        // after the assistant message streamed end and data will save in teh db the publish one more tiem the assistant data with type:chat_complited
+        await redis.publish(
+          `chat:${chatId}`,
+          JSON.stringify({
+            role: "assistant",
+            id: generatedMsgId,
+            content: wholeSentence,
+            timestamp: new Date().toISOString(),
+            type: "chat_completed", //make sure
+            chatId: chatId,
+          })
+        );
       },
-      onChunk: async({chunk}) => {
-        wholeSentence += chunk.textDelta
-        await redis.publish(`chat:${id}`, JSON.stringify({role: "assistant", id:generateMsgId, content: wholeSentence, timestamp: new Date().toISOString(), type: "chat_streaming", chatId: id}))
-
-      }
     });
+
+    // Set required headers for AI SDK data stream
     c.header("X-Vercel-AI-Data-Stream", "v1");
     c.header("Content-Type", "text/plain; charset=utf-8");
     c.header("Content-Encoding", "none");
 
-    return stream(c, (stream) => stream.pipe(code.toDataStream()));
-  } catch (error: any) {
-    console.error("Err in the route", error);
-    return c.json(
-      { error: error.message || "Filed to generate reponse" },
-      500
-    );
+    // Return the data stream
+    return stream(c, (stream) => stream.pipe(result.toDataStream()));
+  } catch (error) {
+    console.error("Completion error:", error);
+    return c.json({ error: "Internal server error" }, 500);
   }
-})
+});
 
-aiRoute.get('/stream/:chatId', async (c) => {
-  const chatId = c.req.param('chatId');
-  const clientId = c.req.queries('clientId')?.[0];
-  
-  if (!clientId) {
-    return c.text('Client ID is required', 400);
-  }
+aiRoute.get("/stream/:chatId", async (c) => {
+  const chatId = c.req.param("chatId");
+  // const clientId = c.req.queries('clientId')?.[0];
+
+  // if (!clientId) {
+  //   return c.text('Client ID is required', 400);
+  // }
 
   const setKey = `chat:${chatId}`;
   const upstashUrl = `${process.env.UPSTASH_REDIS_REST_URL}/subscribe/${setKey}`;
 
+  const initialMessage = "data:"
 
   try {
     // Fetch SSE stream from Upstash Redis REST API
     const upstashResponse = await fetch(upstashUrl, {
-      method: 'POST',
+      method: "GET",
       headers: {
-        'Authorization': `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
-        'Accept': 'text/event-stream',
+        Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
+        Accept: "text/event-stream",
       },
     });
 
     if (!upstashResponse.ok) {
-      return c.text('Failed to subscribe to Upstash Redis', 500);
+      return c.text("Failed to subscribe to Upstash Redis", 500);
     }
 
     const upstashStream = upstashResponse.body;
-    const initialMessage = "data:"
 
     // Create a combined stream: initial message followed by Upstash stream
-    let upstashReader = null;
-    let isControllerClosed = false;
-    
     const combinedStream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
-
-        try {
-          // Send initial message
-          if (!isControllerClosed) {
-            controller.enqueue(encoder.encode(initialMessage));
-          }
-          
-          // Get the reader inside the ReadableStream
-          upstashReader = upstashStream.getReader();
-          
-          while (true) {
-            const { done, value } = await upstashReader.read();
-            if (done) break;
-            
-            // Check if controller is still open before enqueueing
-            if (!isControllerClosed) {
-              controller.enqueue(value);
-            } else {
-              break; // Exit if controller is closed
-            }
-          }
-        } catch (error) {
-          console.error('Stream reading error:', error);
-          if (!isControllerClosed) {
-            try {
-              controller.error(error);
-              isControllerClosed = true;
-            } catch (e) {
-              // Controller might already be closed
-              console.error('Error closing controller:', e);
-            }
-          }
-        } finally {
-          // Clean up reader
-          if (upstashReader) {
-            try {
-              upstashReader.releaseLock();
-            } catch (e) {
-              console.error('Error releasing reader lock:', e);
-            }
-            upstashReader = null;
-          }
-          
-          // Close controller if not already closed
-          if (!isControllerClosed) {
-            try {
-              controller.close();
-              isControllerClosed = true;
-            } catch (e) {
-              console.error('Error closing controller:', e);
-            }
-          }
-          removeClientId(connectedClients, chatId, clientId);
-          console.log('Stream closed for client:', clientId);
+        controller.enqueue(encoder.encode(initialMessage));
+        const reader = upstashStream.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
         }
+        controller.close();
       },
-      
-      async cancel() {
-        console.log('Stream cancelled for client:', clientId);
-        isControllerClosed = true; // Mark as closed to prevent further operations
-        
-        try {
-          if (upstashReader) {
-            // Cancel the reader first, then release the lock
-            try {
-              await upstashReader.cancel();
-            } catch (e) {
-              // Reader might already be cancelled, that's ok
-              console.log('Reader already cancelled or errored:', e.message);
-            }
-            
-            try {
-              upstashReader.releaseLock();
-            } catch (e) {
-              // Lock might already be released, that's ok
-              console.log('Lock already released:', e.message);
-            }
-            
-            upstashReader = null;
-          }
-          
-          // Now we can cancel the original stream
-          try {
-            await upstashStream?.cancel();
-          } catch (e) {
-            // Stream might already be cancelled, that's ok
-            console.log('Stream already cancelled:', e.message);
-          }
-        } catch (error) {
-          console.error('Error during cancellation:', error);
-        }
-        
-        removeClientId(connectedClients, chatId, clientId);
-      }
     });
 
     // Return the SSE stream with appropriate headers
     return new Response(combinedStream, {
       headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': 'http://localhost:5173',
-        'Access-Control-Allow-Credentials': 'true',
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "http://localhost:5173",
+        "Access-Control-Allow-Credentials": "true",
       },
     });
-
   } catch (error) {
-    console.error('SSE Route error:', error);
-    return c.text('Internal server error', 500);
+    console.error("SSE Route error:", error);
+    return c.text("Internal server error", 500);
   }
 });
 
-// Convert this into sse 
+
+// Convert this into sse
 /**
- * Each client is one newtab/window we are tarcking no of opend tabs, and select the randpm client for the perticulat msg/thread 
- * connected clients: {msgId123: {cliet1/tab1, client2, client3}, msgId345: {cliet1/tab1, client2, client3}} 
+ * Each client is one newtab/window we are tarcking no of opend tabs, and select the randpm client for the perticulat msg/thread
+ * connected clients: {msgId123: {cliet1/tab1, client2, client3}, msgId345: {cliet1/tab1, client2, client3}}
  * processedMsgID: return {msgId123:client1, msgId455:client5Id}
- * 
+ *
  * it will help to store the data localy and slove the dublication of data by same smg with dofferent client by givving power to only one primary client to sav the data in teh device
- * return with one client/primary client 
+ * return with one client/primary client
  */
-aiRoute.get('/connected-clients', async(c)=>{
-  return c.json({"connectedClients": processMsgIdMap(connectedClients)}, 200)
+aiRoute.get("/connected-clients", async (c) => {
+  return c.json({ connectedClients: processMsgIdMap(connectedClients) }, 200);
+});
 
-})
-
-
-aiRoute.get('/threads', async(c)=>{
-  const currentUserId = c.get("user")?.id
-  if(!currentUserId){
-    return c.json({error: "Unauthorized User"}, 401)
+aiRoute.get("/threads", async (c) => {
+  const currentUserId = c.get("user")?.id;
+  if (!currentUserId) {
+    return c.json({ error: "Unauthorized User" }, 401);
   }
-  try{
+  try {
     const threads = await db.query.message.findMany({
-      where: (message, {eq, and})=>
-        and(
-          eq(message.userId, currentUserId),
-          isNotNull(message.title)
-        ),
-        orderBy: (message, { desc }) => [desc(message.updatedAt)],
-        columns: {
-          id:true,
-          title:true,
-          updatedAt:true
-        },
-        limit:20
-    })
+      where: (message, { eq, and }) =>
+        and(eq(message.userId, currentUserId), isNotNull(message.title)),
+      orderBy: (message, { desc }) => [desc(message.updatedAt)],
+      columns: {
+        id: true,
+        title: true,
+        updatedAt: true,
+      },
+      limit: 20,
+    });
     return c.json({ threads }, 200);
+  } catch (error: any) {
+    console.log("rrr in thred--", error);
+    return c.json({
+      error: error.message || "Error while getting the generated threads",
+    });
   }
-  catch(error:any){
-    console.log("rrr in thred--", error)
-    return c.json(
-      {error: error.message || "Error while getting the generated threads"}
-    )
-  }
-})
+});
 
-
-aiRoute.delete('delete-thread/:threadId', async(c)=>{
-  const threadId = c.req.param("threadId")
-  const currentUserId = c.get("user")?.id
-  console.log(threadId, currentUserId)
-  if(!currentUserId){
-    return c.json({error: "Unauthorized User"}, 401)
+aiRoute.delete("delete-thread/:threadId", async (c) => {
+  const threadId = c.req.param("threadId");
+  const currentUserId = c.get("user")?.id;
+  console.log(threadId, currentUserId);
+  if (!currentUserId) {
+    return c.json({ error: "Unauthorized User" }, 401);
   }
 
-  try{
+  try {
     const msg = await db.query.message.findFirst({
-      where: (message, {eq})=> eq(message.id, threadId),
-    })
+      where: (message, { eq }) => eq(message.id, threadId),
+    });
     if (!msg) {
-      return c.json({ error: 'Thread not found' }, 404);
+      return c.json({ error: "Thread not found" }, 404);
     }
 
     if (msg.userId !== currentUserId) {
-      return c.json({ error: 'Unauthorized' }, 403);
+      return c.json({ error: "Unauthorized" }, 403);
     }
-    
-    await db.delete(message).where(eq(message.id, threadId))
-    return c.json({message: "Thread deleted successfuly"}, 200)
 
-  }catch(error:any){
-    console.log(error)
-    return c.json({error: error.message || "Error while deleting the thread"}, 500)
+    await db.delete(message).where(eq(message.id, threadId));
+    return c.json({ message: "Thread deleted successfuly" }, 200);
+  } catch (error: any) {
+    console.log(error);
+    return c.json(
+      { error: error.message || "Error while deleting the thread" },
+      500
+    );
   }
-})
-// get/threadId "" varify uuid4 f not return 404 
+});
+// get/threadId "" varify uuid4 f not return 404
 
 // get thread msgs
-aiRoute.get('thread/:threadId', async(c)=>{
-   const threadId = c.req.param("threadId")
-   const isPublic = c.req.query('is_public')
-  const currentUserId = c.get("user")?.id
-  console.log(threadId, currentUserId)
-  if(!currentUserId){
-    return c.json({error: "Unauthorized User"}, 401)
+aiRoute.get("thread/:threadId", async (c) => {
+  const threadId = c.req.param("threadId");
+  const isPublic = c.req.query("is_public");
+  const currentUserId = c.get("user")?.id;
+  console.log(threadId, currentUserId);
+  if (!currentUserId) {
+    return c.json({ error: "Unauthorized User" }, 401);
   }
-
-    const msg = await db.query.message.findFirst({
-      where: (message, {eq})=> eq(message.id, threadId),
-    })
-    if (!msg) {
-      return c.json({ error: 'Thread not found' }, 404);
-    }
-
-    if (msg.userId !== currentUserId) {
-      return c.json({ error: 'Unauthorized' }, 403);
-    }
-  const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1)
-  const chats = (Array.isArray(threads) ? threads : Object.values(threads as string))
-  .map(thd => (thd!))
-  .reverse(); // Reverse since lpush adds to beginning
-
-  return c.json({chats})
-})
-
-aiRoute.get('shared/:threadId', async(c)=>{
-  const threadId = c.req.param("threadId")
 
   const msg = await db.query.message.findFirst({
-      where: (message, {eq})=> eq(message.id, threadId),
-  })
-  if (!msg || !msg.isPublic) {
-    return c.json({ error: 'Chat not found' }, 404);
+    where: (message, { eq }) => eq(message.id, threadId),
+  });
+  if (!msg) {
+    return c.json({ error: "Thread not found" }, 404);
   }
 
-  const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1)
-  const chats = (Array.isArray(threads) ? threads : Object.values(threads as string))
-  .map(thd => (thd!))
-  .reverse();
+  if (msg.userId !== currentUserId) {
+    return c.json({ error: "Unauthorized" }, 403);
+  }
+  const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1);
+  const chats = (
+    Array.isArray(threads) ? threads : Object.values(threads as string)
+  )
+    .map((thd) => thd!)
+    .reverse(); // Reverse since lpush adds to beginning
 
-  return c.json({chats})
-})
+  return c.json({ chats });
+});
+
+aiRoute.get("shared/:threadId", async (c) => {
+  const threadId = c.req.param("threadId");
+
+  const msg = await db.query.message.findFirst({
+    where: (message, { eq }) => eq(message.id, threadId),
+  });
+  if (!msg || !msg.isPublic) {
+    return c.json({ error: "Chat not found" }, 404);
+  }
+
+  const threads = await redis.lrange(`chat:${threadId}:messages`, 0, -1);
+  const chats = (
+    Array.isArray(threads) ? threads : Object.values(threads as string)
+  )
+    .map((thd) => thd!)
+    .reverse();
+
+  return c.json({ chats });
+});
 
 // share the chat
-aiRoute.get('publish-thread/:threadId', async(c)=>{
-  const currentUserId = c.get("user")?.id
-  const threadId = c.req.param("threadId")
-  const isPublicQuery = c.req.query('isp')
+aiRoute.get("publish-thread/:threadId", async (c) => {
+  const currentUserId = c.get("user")?.id;
+  const threadId = c.req.param("threadId");
+  const isPublicQuery = c.req.query("isp");
 
-  let isPublic:boolean = false
-  if(isPublicQuery==="true"){
-    isPublic=true;
+  let isPublic: boolean = false;
+  if (isPublicQuery === "true") {
+    isPublic = true;
   }
-  if(isPublicQuery==="false"){
-    isPublic=false
-  }
-
-  if(!currentUserId){
-    return c.json({error: "Unauthorized User"}, 401)
+  if (isPublicQuery === "false") {
+    isPublic = false;
   }
 
-  try{
+  if (!currentUserId) {
+    return c.json({ error: "Unauthorized User" }, 401);
+  }
+
+  try {
     const msg = await db.query.message.findFirst({
-      where: (message, {eq})=> eq(message.id, threadId),
-    })
+      where: (message, { eq }) => eq(message.id, threadId),
+    });
     if (!msg) {
-      return c.json({ error: 'Thread not found' }, 404);
+      return c.json({ error: "Thread not found" }, 404);
     }
 
     if (msg.userId !== currentUserId) {
-      return c.json({ error: 'Unauthorized' }, 403);
+      return c.json({ error: "Unauthorized" }, 403);
     }
 
-    if(isPublicQuery ){
-      await db.update(message).set({isPublic: isPublic, updatedAt: new Date()}).where(eq(message.id,  threadId))
-      return c.json({id:msg.id, title:msg.title, isPublic:msg.isPublic}, 200)
+    if (isPublicQuery) {
+      await db
+        .update(message)
+        .set({ isPublic: isPublic, updatedAt: new Date() })
+        .where(eq(message.id, threadId));
+      return c.json(
+        { id: msg.id, title: msg.title, isPublic: msg.isPublic },
+        200
+      );
     }
     // remove the userID from here asap
-    return c.json({id:msg.id, title:msg.title, isPublic:msg.isPublic}, 200)
-
-  }catch(error:any){
-    console.log(error)
-    return c.json({error: error.message || "Error while updating the thread"}, 500)
+    return c.json(
+      { id: msg.id, title: msg.title, isPublic: msg.isPublic },
+      200
+    );
+  } catch (error: any) {
+    console.log(error);
+    return c.json(
+      { error: error.message || "Error while updating the thread" },
+      500
+    );
   }
-})
+});
 
-
-
-aiRoute.get('fork/:threadId', async (c) => {
+aiRoute.get("fork/:threadId", async (c) => {
   try {
     const threadId = c.req.param("threadId");
     const userId = c.get("user")?.id;
@@ -520,7 +458,10 @@ aiRoute.get('fork/:threadId', async (c) => {
     });
     await pipeline.exec();
 
-    return c.json({ message: "Forked successfully", newThreadId: generatedMsgId }, 200);
+    return c.json(
+      { message: "Forked successfully", newThreadId: generatedMsgId },
+      200
+    );
   } catch (error) {
     console.error("Forking error:", error);
     return c.json({ error: "Internal server error" }, 500);
