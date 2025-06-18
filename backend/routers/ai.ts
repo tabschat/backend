@@ -3,21 +3,16 @@ import { stream } from "hono/streaming";
 import { createBunWebSocket } from "hono/bun";
 
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText, generateText } from "ai";
 import { Redis } from "@upstash/redis";
 
-import { db } from "@/db";
+import { db } from "db";
 import { auth } from "../lib/auth";
-import { message } from "@/db/schema/message";
+import { message } from "db/schema/message";
 import { eq, isNotNull } from "drizzle-orm";
 
-import { v4 as uuidv4 } from "uuid"; //delete it asap
-import type { MsgIdMap } from "@/lib/get-set-client";
-import {
-  addClientId,
-  removeClientId,
-  processMsgIdMap,
-} from "@/lib/get-set-client";
+import { v4 as uuidv4 } from "uuid"; 
 
 export const { upgradeWebSocket } = createBunWebSocket();
 
@@ -33,7 +28,6 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-const connectedClients: MsgIdMap = {};
 
 const openai = createOpenAI({
   apiKey: process.env.OPENAI_API,
@@ -52,11 +46,15 @@ aiRoute.get("/models", async (c) => {
 aiRoute.post("/completion", async (c) => {
   try {
     // Get the prompt and chat ID from request body; generate new chatId if missing or first message
-    const { prompt, chatId, messages} = await c.req.json();
+    const { prompt, chatId, messages, apiKey, model} = await c.req.json();
     const userId = c.get("user")?.id;
 
-
     if (!chatId || !userId)  return c.json({ error: "Chat Id or User Id required" }, 407);
+    if(!apiKey) return c.json({"message": "Invalid key"}, 400)
+
+    const openrouter = createOpenRouter({
+        apiKey: apiKey
+    });
 
     const generatedUserInputId = `usr-${uuidv4()}`;
     const generatedMsgId = `msg-${uuidv4()}`;
@@ -91,7 +89,7 @@ aiRoute.post("/completion", async (c) => {
     `chat:${chatId}:messages`, userInputObj)
 
     const result = streamText({
-      model: openai("gpt-3.5-turbo"),
+      model: openrouter.completion("google/gemini-2.0-flash-lite-001"),
       messages: newMssgArray,
       system: `you are a ai assistant name Gass you are 10 days old and you will only answer what is asked by the user nothing more nothing less.`,
       onChunk: async ({ chunk }) => {
@@ -143,7 +141,7 @@ aiRoute.post("/completion", async (c) => {
         if (msgLen===0) {
           const { text:generatedTitle } = await generateText({
             // model: openai("gpt-4o-mini-2024-07-18"),
-            model: openai("gpt-3.5-turbo"),
+            model: openrouter.chat("gpt-3.5-turbo"),
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content1: ${text}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${prompt}; ## DO not use both content1 and context2 always use content1 if the title is not desciptive then use content2 for title generation`,
           });
           await db
@@ -179,13 +177,37 @@ aiRoute.post("/completion", async (c) => {
   }
 });
 
+aiRoute.post("/verify-key", async (c) => {
+    try {
+        const { prompt: apiKey } = await c.req.json();
+        
+        if (!apiKey) {
+            return c.json({ 'message': 'Invalid Key' }, 400);
+        }
+
+        const openrouter = createOpenRouter({
+            apiKey: apiKey
+        });
+
+        const { text } = await generateText({
+            model: openrouter.chat("gpt-3.5-turbo"),
+            prompt: "what is 2+2, just return a answer in single number, dont add any explanation",
+        });
+
+        return c.json({text}, 200);
+
+    } catch (err) {
+        console.error('Error verifying API key:', err);
+        return c.json({ 
+            "message": "Invalid API key or request failed" 
+        }, 500);
+    }
+});
+
+
 aiRoute.get("/stream/:chatId", async (c) => {
   const chatId = c.req.param("chatId");
-  // const clientId = c.req.queries('clientId')?.[0];
-
-  // if (!clientId) {
-  //   return c.text('Client ID is required', 400);
-  // }
+  
 
   const setKey = `chat:${chatId}`;
   const upstashUrl = `${process.env.UPSTASH_REDIS_REST_URL}/subscribe/${setKey}`;
@@ -213,6 +235,9 @@ aiRoute.get("/stream/:chatId", async (c) => {
       async start(controller) {
         const encoder = new TextEncoder();
         controller.enqueue(encoder.encode(initialMessage));
+        if(!upstashStream){
+          return null
+        }
         const reader = upstashStream.getReader();
         while (true) {
           const { done, value } = await reader.read();
@@ -240,18 +265,6 @@ aiRoute.get("/stream/:chatId", async (c) => {
 });
 
 
-// Convert this into sse
-/**
- * Each client is one newtab/window we are tarcking no of opend tabs, and select the randpm client for the perticulat msg/thread
- * connected clients: {msgId123: {cliet1/tab1, client2, client3}, msgId345: {cliet1/tab1, client2, client3}}
- * processedMsgID: return {msgId123:client1, msgId455:client5Id}
- *
- * it will help to store the data localy and slove the dublication of data by same smg with dofferent client by givving power to only one primary client to sav the data in teh device
- * return with one client/primary client
- */
-aiRoute.get("/connected-clients", async (c) => {
-  return c.json({ connectedClients: processMsgIdMap(connectedClients) }, 200);
-});
 
 aiRoute.get("/threads", async (c) => {
   const currentUserId = c.get("user")?.id;

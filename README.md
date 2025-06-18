@@ -24,13 +24,12 @@ bun install
 This project uses PostgreSQL with Drizzle ORM.
 
 1. Make sure you have a PostgreSQL database set up.
-2. Update your `apps/server/.env` file with your PostgreSQL connection details.
+2. Update your `.env` file with your PostgreSQL connection details.
 
 3. Apply the schema to your database:
 ```bash
 bun db:push
 ```
-
 
 Then, run the development server:
 
@@ -38,26 +37,26 @@ Then, run the development server:
 bun dev
 ```
 
-
-
 The API is running at [http://localhost:3000](http://localhost:3000).
-
-
 
 ## Project Structure
 
 ```
 backend/
-├── apps/
-│   └── server/      # Backend API (Hono, NONE)
+├── db/           # Database schema and migrations
+├── lib/          # Library utilities
+├── routers/      # API routers
+├── index.ts      # Server entry point
+├── drizzle.config.ts
+├── tsconfig.json
+├── package.json
+├── .env.example
 ```
 
 ## Available Scripts
 
-- `bun dev`: Start all applications in development mode
-- `bun build`: Build all applications
-- `bun dev:web`: Start only the web application
-- `bun dev:server`: Start only the server
-- `bun check-types`: Check TypeScript types across all apps
+- `bun dev`: Start the server in development mode
+- `bun build`: Build the application
+- `bun check-types`: Check TypeScript types
 - `bun db:push`: Push schema changes to database
 - `bun db:studio`: Open database studio UI
