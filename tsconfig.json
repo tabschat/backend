@@ -2,26 +2,22 @@
 	"compilerOptions": {
 		"target": "ESNext",
 		"module": "ESNext",
-		"moduleResolution": "bundler",
-		"verbatimModuleSyntax": true,
+		"moduleResolution": "node",
 		"strict": true,
 		"skipLibCheck": true,
-		"baseUrl": "./backend",
+		"baseUrl": "src",
 		"paths": {
-		"@/*": ["./*"],
-		"db": ["db/index.ts"],
-		"db/*": ["db/*"],
-		"db/schema/message": ["db/schema/message.ts"]
+			"db": ["db/index.ts"],
+			"db/*": ["db/*"],
+			"db/schema/message": ["db/schema/message.ts"],
+			"@/*": ["*"]
 		},
 		"outDir": "./dist",
-		"types": [
-        "bun"
-    ],
-	  "composite": true,
-		"jsx": "react-jsx",
-		"jsxImportSource": "hono/jsx"
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true
 	},
 	"tsc-alias": {
 		"resolveFullPaths": true
 	}
 } 
+

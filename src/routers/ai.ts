@@ -1,20 +1,19 @@
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
-import { createBunWebSocket } from "hono/bun";
 
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText, generateText } from "ai";
 import { Redis } from "@upstash/redis";
 
-import { db } from "../db";
-import { auth } from "../lib/auth";
-import { message } from "../db/schema/message";
+import { db } from "db/index.js";
+import { auth } from "lib/auth.js";
+import { message } from "db/schema/message.js";
 import { eq, isNotNull } from "drizzle-orm";
 
 import { v4 as uuidv4 } from "uuid"; 
 
-export const { upgradeWebSocket } = createBunWebSocket();
+
 
 const aiRoute = new Hono<{
   Variables: {
