@@ -16,13 +16,15 @@ app.use(logger());
 app.use(
 	"/*",
 	cors({
-		origin: process.env.CORS_ORIGIN || "",
+		origin: [
+			"http://localhost:5173",
+			"https://tabs.chat",
+		],
 		allowMethods: ["GET", "POST", "OPTIONS", "DELETE"],
 		allowHeaders: ["Content-Type", "Authorization"],
 		credentials: true,
 	})
 );
-
 app.use("/*", async (c, next) => {
 	const path = c.req.path;
 	if (path.startsWith("/api/auth/") || path === "/" || path.startsWith("/ai/shared/")) {
