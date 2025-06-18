@@ -6,9 +6,12 @@
 		"verbatimModuleSyntax": true,
 		"strict": true,
 		"skipLibCheck": true,
-		"baseUrl": "./",
+		"baseUrl": "./backend",
 		"paths": {
-		  "@/*": ["./*"],
+		"@/*": ["./*"],
+		"db": ["db/index.ts"],
+		"db/*": ["db/*"],
+		"db/schema/message": ["db/schema/message.ts"]
 		},
 		"outDir": "./dist",
 		"types": [

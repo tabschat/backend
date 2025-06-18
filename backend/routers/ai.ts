@@ -7,9 +7,9 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText, generateText } from "ai";
 import { Redis } from "@upstash/redis";
 
-import { db } from "db";
+import { db } from "../db";
 import { auth } from "../lib/auth";
-import { message } from "db/schema/message";
+import { message } from "../db/schema/message";
 import { eq, isNotNull } from "drizzle-orm";
 
 import { v4 as uuidv4 } from "uuid"; 

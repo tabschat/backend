@@ -56,7 +56,6 @@ app.route('/ai', aiRoute)
 Bun.serve({
   fetch: app.fetch,
   port: process.env.PORT || 3000,
-  idleTimeout: 255, // 1 hour
 });
 
 
