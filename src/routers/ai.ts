@@ -6,8 +6,8 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText, generateText } from "ai";
 import { Redis } from "@upstash/redis";
 
-import { db } from "db/index.js";
-import { auth } from "lib/auth.js";
+import { db } from "db";
+import { auth } from "@/lib/auth";
 import { message } from "db/schema/message.js";
 import { eq, isNotNull } from "drizzle-orm";
 
@@ -27,10 +27,6 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API,
-});
 
 aiRoute.get("/models", async (c) => {
   const modelList = await db.query.llms.findMany({

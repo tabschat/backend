@@ -1,23 +1,31 @@
 {
-	"compilerOptions": {
-		"target": "ESNext",
-		"module": "ESNext",
-		"moduleResolution": "node",
-		"strict": true,
-		"skipLibCheck": true,
-		"baseUrl": "src",
-		"paths": {
-			"db": ["db/index.ts"],
-			"db/*": ["db/*"],
-			"db/schema/message": ["db/schema/message.ts"],
-			"@/*": ["*"]
-		},
-		"outDir": "./dist",
-		"esModuleInterop": true,
-		"forceConsistentCasingInFileNames": true
-	},
-	"tsc-alias": {
-		"resolveFullPaths": true
-	}
-} 
-
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "strict": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "db": ["src/db/index.ts"],
+      "db/*": ["src/db/*"],
+      "@/*": ["src/*"]
+    },
+    "outDir": "./dist",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "tsc-alias": {
+    "resolveFullPaths": true,
+    "replacers": {
+      "db": "./db/index.js",
+      "db/*": "./db/*",
+      "@/*": "./*"
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
