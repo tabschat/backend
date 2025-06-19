@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { stream } from "hono/streaming";
 
-import { createOpenAI } from "@ai-sdk/openai";
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
+import { createOpenAI , OpenAIProvider} from "@ai-sdk/openai";
+import { createGoogleGenerativeAI , GoogleGenerativeAIProvider} from '@ai-sdk/google';
+import { createOpenRouter , OpenRouterProvider} from "@openrouter/ai-sdk-provider";
 import { streamText, generateText } from "ai";
 import { Redis } from "@upstash/redis";
 
@@ -11,9 +12,7 @@ import { auth } from "@/lib/auth";
 import { message } from "db/schema/message.js";
 import { eq, isNotNull } from "drizzle-orm";
 
-import { v4 as uuidv4 } from "uuid"; 
-
-
+import { v4 as uuidv4 } from "uuid";
 
 const aiRoute = new Hono<{
   Variables: {
@@ -26,7 +25,6 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
-
 
 aiRoute.get("/models", async (c) => {
   const modelList = await db.query.llms.findMany({
@@ -41,15 +39,42 @@ aiRoute.get("/models", async (c) => {
 aiRoute.post("/completion", async (c) => {
   try {
     // Get the prompt and chat ID from request body; generate new chatId if missing or first message
-    const { prompt, chatId, messages, apiKey, model} = await c.req.json();
+    const { prompt, chatId, messages, llm, apiKey, model } = await c.req.json();
     const userId = c.get("user")?.id;
+    console.log(llm, apiKey, model)
 
-    if (!chatId || !userId)  return c.json({ error: "Chat Id or User Id required" }, 407);
-    if(!apiKey) return c.json({"message": "Invalid key"}, 400)
+    if (!chatId || !userId)
+      return c.json({ error: "Chat Id or User Id required" }, 407);
+    if (!apiKey) return c.json({ message: "Invalid key" }, 400);
 
-    const openrouter = createOpenRouter({
-        apiKey: apiKey
-    });
+    let operator: OpenRouterProvider | GoogleGenerativeAIProvider | OpenAIProvider
+
+    switch (llm) {
+      case "openai":
+        operator = createOpenAI({
+          apiKey: apiKey
+        });
+        break;
+      case "gemini":
+        operator = createGoogleGenerativeAI({
+          apiKey: apiKey
+        });
+        break;
+      case "openrouter":
+        operator = createOpenRouter({
+          apiKey: apiKey,
+        });
+        break
+        case "groq":
+         operator = createOpenAI({
+          apiKey: apiKey,
+          baseURL:"https://api.groq.com/openai/v1",
+        });
+        break
+      default:
+        return c.json({"message": "Invalid llm"}, 400)
+    }
+
 
     const generatedUserInputId = `usr-${uuidv4()}`;
     const generatedMsgId = `msg-${uuidv4()}`;
@@ -80,26 +105,23 @@ aiRoute.post("/completion", async (c) => {
     }
 
     await redis.publish(`chat:${chatId}`, userInputObj);
-    await redis.lpush(
-    `chat:${chatId}:messages`, userInputObj)
+    await redis.lpush(`chat:${chatId}:messages`, userInputObj);
 
     const result = streamText({
-      model: openrouter.completion("google/gemini-2.0-flash-lite-001"),
+      model: operator.chat(model),
       messages: newMssgArray,
       system: `you are a ai assistant name Gass you are 10 days old and you will only answer what is asked by the user nothing more nothing less.`,
       onChunk: async ({ chunk }) => {
         if (chunk.type === "text-delta") {
           wholeSentence += chunk.textDelta;
         }
-        await redis.publish(
-          `chat:${chatId}`, {
-            role: "assistant",
-            id: generatedMsgId,
-            content: wholeSentence,
-            timestamp: new Date(),
-            type: "chat_streaming",
-          }
-        );
+        await redis.publish(`chat:${chatId}`, {
+          role: "assistant",
+          id: generatedMsgId,
+          content: wholeSentence,
+          timestamp: new Date(),
+          type: "chat_streaming",
+        });
       },
       onFinish: async ({ text }) => {
         // save the generated content data in upstash redis
@@ -133,10 +155,10 @@ aiRoute.post("/completion", async (c) => {
 
         // generate title for new chat/message array/ convo
         // if msg len 0 that smen it is new msg and then we have to generate the title for it, after comolitaion generated and mutate the url in frontend to get latest title
-        if (msgLen===0) {
-          const { text:generatedTitle } = await generateText({
+        if (msgLen === 0) {
+          const { text: generatedTitle } = await generateText({
             // model: openai("gpt-4o-mini-2024-07-18"),
-            model: openrouter.chat("gpt-3.5-turbo"),
+            model: operator.chat(model),
             prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content1: ${text}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${prompt}; ## DO not use both content1 and context2 always use content1 if the title is not desciptive then use content2 for title generation`,
           });
           await db
@@ -157,6 +179,12 @@ aiRoute.post("/completion", async (c) => {
           })
         );
       },
+      onError: (err) => {
+        console.log("Error", err);
+      },
+      onStepFinish: ({warnings, request}) =>{
+        console.log(warnings, request)
+      }
     });
 
     // Set required headers for AI SDK data stream
@@ -172,42 +200,84 @@ aiRoute.post("/completion", async (c) => {
   }
 });
 
+// we are assuming llm will always present
 aiRoute.post("/verify-key", async (c) => {
-    try {
-        const { prompt: apiKey } = await c.req.json();
-        
-        if (!apiKey) {
-            return c.json({ 'message': 'Invalid Key' }, 400);
-        }
+  try {
+    const { prompt: apiKey, llm } = await c.req.json();
+    console.log("LLM, Key", llm, apiKey)
 
-        const openrouter = createOpenRouter({
-            apiKey: apiKey
-        });
-
-        const { text } = await generateText({
-            model: openrouter.chat("gpt-3.5-turbo"),
-            prompt: "what is 2+2, just return a answer in single number, dont add any explanation",
-        });
-
-        return c.json({text}, 200);
-
-    } catch (err) {
-        console.error('Error verifying API key:', err);
-        return c.json({ 
-            "message": "Invalid API key or request failed" 
-        }, 500);
+    if (!apiKey) {
+      return c.json({ message: "Invalid Key" }, 400);
     }
-});
 
+    if (llm === "openrouter") {
+      const openrouter = createOpenRouter({
+        apiKey: apiKey,
+      });
+      const { text } = await generateText({
+        model: openrouter.chat("gpt-3.5-turbo"),
+        prompt:
+          "what is 2+2, just return a answer in single number, dont add any explanation",
+      });
+      return c.json({ text }, 200);
+    }
+    if(llm=== "gemini"){
+      const google = createGoogleGenerativeAI({
+        apiKey:apiKey
+      })
+      const { text } = await generateText({
+        model: google('gemini-2.5-flash-preview-04-17'),
+        prompt:
+          "what is 2+2, just return a answer in single number, dont add any explanation",
+      });
+      return c.json({ text }, 200);
+    }
+
+    if(llm==="openai"){
+      const openai = createOpenAI({
+        apiKey:apiKey
+      });
+       const { text } = await generateText({
+        model: openai('gpt-4.1-nano'),
+        prompt:
+          "what is 2+2, just return a answer in single number, dont add any explanation",
+      });
+      return c.json({ text }, 200);
+    }
+    if(llm==="groq"){
+      const groq = createOpenAI({
+          apiKey: apiKey,
+          baseURL: 'https://api.groq.com/openai/v1',
+      });
+       const { text } = await generateText({
+        model: groq('gemma2-9b-it'),
+        prompt:
+          "what is 2+2, just return a answer in single number, dont add any explanation",
+        onStepFinish: ({response}) => {
+          console.log(response)
+        }
+      });
+      return c.json({ text }, 200);
+    }
+
+  } catch (err) {
+    console.error("Error verifying API key:", err);
+    return c.json(
+      {
+        message: "Invalid API key or request failed",
+      },
+      400
+    );
+  }
+});
 
 aiRoute.get("/stream/:chatId", async (c) => {
   const chatId = c.req.param("chatId");
-  
 
   const setKey = `chat:${chatId}`;
   const upstashUrl = `${process.env.UPSTASH_REDIS_REST_URL}/subscribe/${setKey}`;
 
-  const initialMessage = "data:"
+  const initialMessage = "data:";
 
   try {
     // Fetch SSE stream from Upstash Redis REST API
@@ -230,8 +300,8 @@ aiRoute.get("/stream/:chatId", async (c) => {
       async start(controller) {
         const encoder = new TextEncoder();
         controller.enqueue(encoder.encode(initialMessage));
-        if(!upstashStream){
-          return null
+        if (!upstashStream) {
+          return null;
         }
         const reader = upstashStream.getReader();
         while (true) {
@@ -258,8 +328,6 @@ aiRoute.get("/stream/:chatId", async (c) => {
     return c.text("Internal server error", 500);
   }
 });
-
-
 
 aiRoute.get("/threads", async (c) => {
   const currentUserId = c.get("user")?.id;
