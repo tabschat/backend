@@ -159,7 +159,7 @@ aiRoute.post("/completion", async (c) => {
           const { text: generatedTitle } = await generateText({
             // model: openai("gpt-4o-mini-2024-07-18"),
             model: operator.chat(model),
-            prompt: `Im providing you with the content; please generate a concise, on-point title of fewer than 56 characters. You must follow this. Content1: ${text}, and if the text you generated is undefined types or sometjing which dont have some meaning in the content context then generate again and this time ue context2: ${prompt}; ## DO not use both content1 and context2 always use content1 if the title is not desciptive then use content2 for title generation`,
+            prompt: `Generate a title under 56 characters for the following content. Prioritize Content1: ${text}. If the title derived from Content1 is not descriptive or meaningful, then use Context2: ${prompt} for title generation instead. Never use both. NOTE: never use quote the tile should simply be text witoout the quote:`,
           });
           await db
             .update(message)
@@ -181,9 +181,6 @@ aiRoute.post("/completion", async (c) => {
       },
       onError: (err) => {
         console.log("Error", err);
-      },
-      onStepFinish: ({warnings, request}) =>{
-        console.log(warnings, request)
       }
     });
 
